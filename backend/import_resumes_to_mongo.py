@@ -16,6 +16,7 @@ DB_NAME   = "hr_intelligence_portal"
 RESUMES_DIR = os.path.join(os.path.dirname(__file__), "resumes")
 
 
+ # Imports all PDF resumes from the resumes directory into MongoDB
 async def import_all():
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
     resumes_col = client[DB_NAME]["resumes"]
@@ -43,7 +44,7 @@ async def import_all():
             print(f"  [ERROR]  {fname} — text extraction failed: {e}")
             text = ""
 
-        # Extract contact info (non-blocking for a script — sync is fine here)
+        # Extract contact info 
         try:
             contact = extract_contact_details(text)
         except Exception:
@@ -61,7 +62,7 @@ async def import_all():
             "name":        contact.get("name"),
             "email":       contact.get("email"),
             "phone":       contact.get("phone"),
-            # no 'contact' object, no 'created_at'
+           
         }
 
         await resumes_col.insert_one(doc)

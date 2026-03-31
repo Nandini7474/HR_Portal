@@ -8,6 +8,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = "hr_intelligence_portal"
 
 class MongoDB:
+    # Initialize MongoDB client and collections
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         self.db = self.client[DB_NAME]
@@ -18,6 +19,7 @@ class MongoDB:
         self.shortlists = self.db.shortlists # Junction for results, scores, questions, and status
 
     #job_descriptions
+    # Save a new job description to the database
     async def save_jd(self, jd_data: dict):
         jd_doc = {
             "title": jd_data.get("title"),
@@ -30,6 +32,7 @@ class MongoDB:
         result = await self.jds.insert_one(jd_doc)
         return str(result.inserted_id)
 
+    # Retrieve all job descriptions from the database
     async def get_all_jds(self):
         cursor = self.jds.find().sort("created_at", -1)
         jds = await cursor.to_list(length=1000)
@@ -38,6 +41,7 @@ class MongoDB:
             del jd["_id"]
         return jds
     
+    # Retrieve a job description by its ID
     async def get_jd_by_id(self, jd_id: str):
         jd = await self.jds.find_one({"_id": ObjectId(jd_id)})
         if jd:
@@ -46,6 +50,7 @@ class MongoDB:
         return jd
 
     #resumes
+    # Get a resume by path or create a new one if it doesn't exist
     async def get_or_create_resume(self, filename: str, path: str, text: str, pdf_bytes: bytes, name: Optional[str] = None, email: Optional[str] = None, phone: Optional[str] = None):
         resume = await self.resumes.find_one({"path": path})
         if not resume:
@@ -64,6 +69,7 @@ class MongoDB:
         return str(resume["_id"])
 
     #shortlist_results
+    # Save or update a shortlist result for a candidate and job description
     async def save_shortlist_result(self, jd_id: str, resume_id: str, score: float, summary: str, jd_text: str = None):
         # Update or Insert result for this specific candidate under this JD
         query = {"jd_id": jd_id, "resume_id": resume_id}
@@ -82,6 +88,7 @@ class MongoDB:
             update["$set"]["job_description"] = jd_text
         await self.shortlists.update_one(query, update, upsert=True)
 
+    # Update the status (accepted/rejected) of a candidate for a job description
     async def update_candidate_status(self, jd_id: str, resume_id: str, status: str):
         # status should be 'accepted' or 'rejected'
         await self.shortlists.update_one(
@@ -89,12 +96,14 @@ class MongoDB:
             {"$set": {"status": status, "updated_at": datetime.utcnow()}}
         )
 
+    # Save generated interview questions for a candidate and job description
     async def save_questions(self, jd_id: str, resume_id: str, questions: List[str]):
         await self.shortlists.update_one(
             {"jd_id": jd_id, "resume_id": resume_id},
             {"$set": {"questions": questions, "updated_at": datetime.utcnow()}}
         )
 
+    # Get all shortlist results for a given job description
     async def get_results_for_jd(self, jd_id: str):
         cursor = self.shortlists.find({"jd_id": jd_id}).sort("score", -1)
         results = await cursor.to_list(length=1000)
@@ -110,6 +119,7 @@ class MongoDB:
                 r["resume_details"]["_id"] = str(r["resume_details"]["_id"])
         return results
 
+    # Retrieve all candidates with status 'accepted'
     async def get_accepted_candidates(self):
         cursor = self.shortlists.find({"status": "accepted"})
         results = await cursor.to_list(length=1000)

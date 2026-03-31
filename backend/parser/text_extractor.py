@@ -5,6 +5,7 @@ import pdfplumber
 #lazy_singletons
 _ocr_reader = None
 
+# Returns a singleton EasyOCR reader instance
 def _get_ocr_reader():
     global _ocr_reader
     if _ocr_reader is None:
@@ -16,6 +17,7 @@ def _get_ocr_reader():
 
 
 #core_function
+ # Extracts text from a PDF file, using OCR if needed
 def extract_text_from_pdf(file_path: str) -> str:
  
     text = _try_pdfplumber(file_path)
@@ -26,6 +28,7 @@ def extract_text_from_pdf(file_path: str) -> str:
     return _ocr_with_pypdfium2(file_path)
 
 
+ # Attempts to extract text from a PDF using pdfplumber
 def _try_pdfplumber(file_path: str) -> str:
     text = ""
     try:
@@ -39,6 +42,7 @@ def _try_pdfplumber(file_path: str) -> str:
     return text
 
 
+ # Uses pypdfium2 and EasyOCR to extract text from image-based PDFs
 def _ocr_with_pypdfium2(file_path: str) -> str:
     """Render each PDF page to an image via pypdfium2, then run EasyOCR."""
     text = ""

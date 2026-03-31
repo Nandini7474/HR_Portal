@@ -130,7 +130,7 @@ def calculate_ats_score(resume_text: str, jd_text: str, cosine_sim: float) -> fl
         keyword_bonus = min(20.0, overlap_ratio * 40.0)
     else:
         keyword_bonus = 0.0
-
+    print(overlap_ratio )
     return min(98.0, round(semantic + keyword_bonus, 1))
 
 #summary_extraction
