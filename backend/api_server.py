@@ -197,7 +197,7 @@ def initialize_vector_db():
     try:
         print("[VECTOR_DB] Initialising Vector Database...", flush=True)
 
-        # Determine embedding dimension via a tiny probe
+        # Determine embedding dimension via a tiny probe test embedding
         probe_emb = create_embedding("probe")
         dimension = len(probe_emb)
 

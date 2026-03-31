@@ -20,7 +20,7 @@ const GeneratorForm = ({ onJDGenerated }) => {
     // LLM calls are proxied through the FastAPI backend at /generate-jd
     const BACKEND_URL = "http://localhost:8000";
 
-    const handleInputChange = (e) => {
+    const handleInputChange = (e) => { //event e
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
     };
