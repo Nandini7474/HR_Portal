@@ -10,7 +10,9 @@ DB_NAME = "hr_intelligence_portal"
 class MongoDB:
     # Initialize MongoDB client and collections
     def __init__(self):
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(
+            MONGO_URI, serverSelectionTimeoutMS=5000
+        )
         self.db = self.client[DB_NAME]
         
         # Collections

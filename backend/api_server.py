@@ -1,4 +1,9 @@
 import os
+# Must be first — before numpy/torch/easyocr load their OpenMP runtimes
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import re
 import threading
 from typing import List, Optional
@@ -45,18 +50,18 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
-#config
+## Configuration for directory paths and constants
 BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# RESUME_FOLDER   = os.path.join(BASE_DIR, "resumes")
 RESUME_FOLDER   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resumes")
 
 if not os.path.exists(RESUME_FOLDER):
     os.makedirs(RESUME_FOLDER)
     print(f"[INIT] Created missing resumes directory at {RESUME_FOLDER}", flush=True)
 
-#app
+## FastAPI app initialization
 app = FastAPI(title="Resume Shortlister API")
 
+## Add CORS middleware to FastAPI app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -64,9 +69,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount the static files route
+## Mount the static files route for resumes
 app.mount("/resumes", StaticFiles(directory=RESUME_FOLDER), name="resumes")
 
+## Retrieve OpenRouter API key from .env file
 def get_openrouter_key():
     import os
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -86,7 +92,7 @@ vector_db: ResumeVectorDB | None = None
 _db_ready = False
 _db_lock  = threading.Lock()
 
-#pydantic_models
+#pydantic_models for structure validation
 class JDRequest(BaseModel):
     jd_text: str
     jd_id: Optional[str] = None
@@ -115,7 +121,7 @@ class JDGenerateRequest(BaseModel):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 2000
 
-#ats_scoring
+## Calculate ATS score based on semantic similarity and keyword overlap
 def calculate_ats_score(resume_text: str, jd_text: str, cosine_sim: float) -> float:
     """
     ATS score = 80% cosine semantic similarity + 20% keyword overlap.
@@ -130,13 +136,13 @@ def calculate_ats_score(resume_text: str, jd_text: str, cosine_sim: float) -> fl
         keyword_bonus = min(20.0, overlap_ratio * 40.0)
     else:
         keyword_bonus = 0.0
-    print(overlap_ratio )
     return min(98.0, round(semantic + keyword_bonus, 1))
 
-#summary_extraction
+## Keywords for summary extraction
 _SUMMARY_TRIGGERS = ("experience", "skill", "objective", "summary",
                      "profile", "expertise", "qualification", "about")
 
+## Generate summary using LLM API
 def generate_summary(resume_text: str, jd_text: str) -> str:
     """
     Generate an AI summary using Llama 3.3 via OpenRouter API.
@@ -157,10 +163,10 @@ def generate_summary(resume_text: str, jd_text: str) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000", # Required for some free models
+        "HTTP-Referer": "http://localhost:3000", 
         "X-Title": "HR Intelligence Portal"
     }
-    # Use the fastest available model for shortlisting summaries to avoid timeouts
+   
     data = {
         "model": "google/gemini-3.1-flash-lite-preview",
         "messages": [
@@ -191,56 +197,56 @@ def generate_summary(resume_text: str, jd_text: str) -> str:
         print(f"[LLM_ERROR] {str(e)}", flush=True)
         return "Match analysis suggests alignment with core technical requirements and domain experience."
 
-#vectordb_boot
+## Initialize the vector database and index resumes
 def initialize_vector_db():
     global vector_db, _db_ready
+    print("inside embedding generation")
     try:
         print("[VECTOR_DB] Initialising Vector Database...", flush=True)
 
-        # Determine embedding dimension via a tiny probe test embedding
+        # Determine embedding dimension (how many faeatures the model returns) required for initilization of the FAISS index
         probe_emb = create_embedding("probe")
         dimension = len(probe_emb)
-
+        print(f"[VECTOR_DB] Embedding dimension: {dimension}", flush=True)
         with _db_lock:
             vector_db = ResumeVectorDB(dimension)
 
         n_indexed = len(vector_db.resume_map)
+        print(f"[VECTOR_DB] Loaded {n_indexed} pre-indexed resumes from disk.", flush=True)
 
-        if n_indexed > 0:
-            print(f"[VECTOR_DB] Loaded {n_indexed} pre-indexed resumes from disk.", flush=True)
+        # Determine which PDFs on disk are NOT yet in the index
+        already_indexed = set(os.path.normcase(p) for p in vector_db.resume_map.values())
+        pdfs = sorted(f for f in os.listdir(RESUME_FOLDER) if f.lower().endswith(".pdf"))
+        new_pdfs = [
+            f for f in pdfs
+            if os.path.normcase(os.path.join(RESUME_FOLDER, f)) not in already_indexed
+        ]
+
+        if not new_pdfs:
+            print("[VECTOR_DB] All resumes already indexed — nothing to do.", flush=True)
         else:
-            # Fresh index — parse and embed every PDF in the resumes folder
-            print("[VECTOR_DB] Empty database. Scanning resumes folder...", flush=True)
-            if not os.path.exists(RESUME_FOLDER):
-                os.makedirs(RESUME_FOLDER)
-                print(f"[WARN] Created folder: {RESUME_FOLDER}", flush=True)
-            else:
-                pdfs = sorted(
-                    f for f in os.listdir(RESUME_FOLDER) if f.lower().endswith(".pdf")
-                )
-                if not pdfs:
-                    print("[WARN] No PDF files found in 'resumes/' folder.", flush=True)
-                else:
-                    texts, paths = [], []
-                    for fname in pdfs:
-                        fpath = os.path.join(RESUME_FOLDER, fname)
-                        try:
-                            t = extract_text_from_pdf(fpath)
-                            if t.strip():
-                                texts.append(t)
-                                paths.append(fpath)
-                                print(f"   [OK] {fname}", flush=True)
-                            else:
-                                print(f"   [WARN] {fname} — empty text, skipped", flush=True)
-                        except Exception as e:
-                            print(f"   [ERROR] {fname} — {e}", flush=True)
+            print(f"[VECTOR_DB] {len(new_pdfs)} new resume(s) to index...", flush=True)
+            texts, paths = [], []
+            for fname in new_pdfs:
+                print(f"[PARSE] Processing {fname}...", flush=True)
+                fpath = os.path.join(RESUME_FOLDER, fname)
+                try:
+                    t = extract_text_from_pdf(fpath)
+                    if t.strip():
+                        texts.append(t)
+                        paths.append(fpath)
+                        print(f"   [OK] {fname}", flush=True)
+                    else:
+                        print(f"   [WARN] {fname} — empty text, skipped", flush=True)
+                except Exception as e:
+                    print(f"   [ERROR] {fname} — {e}", flush=True)
 
-                    if texts:
-                        print(f"[ENCODE] Encoding {len(texts)} resumes...", flush=True)
-                        embeddings = [create_embedding(t) for t in texts]
-                        with _db_lock:
-                            vector_db.add_resumes(embeddings, paths, texts)
-                        print(f"[SUCCESS] Indexed {len(texts)} resumes.", flush=True)
+            if texts:
+                print(f"[ENCODE] Encoding {len(texts)} resume(s)...", flush=True)
+                embeddings = [create_embedding(t) for t in texts]
+                with _db_lock:
+                    vector_db.add_resumes(embeddings, paths, texts)
+                print(f"[SUCCESS] Indexed {len(texts)} new resume(s).", flush=True)
 
         _db_ready = True
         print("[VECTOR_DB] Ready — server fully operational.", flush=True)
@@ -250,52 +256,67 @@ def initialize_vector_db():
         print(f"[ERROR] VectorDB init error: {e}", flush=True)
         traceback.print_exc()
 
-#startup
+## FastAPI startup event to initialize vector DB in background
 @app.on_event("startup")
 async def startup_event():
     # Heavy work in a background thread so uvicorn binds instantly
     threading.Thread(target=initialize_vector_db, daemon=True).start()
 
-#routes
+## Root endpoint for API status
 @app.get("/")
 def read_root():
     n = len(vector_db.resume_map) if vector_db else 0
     return {"status": "online", "db_ready": _db_ready, "indexed_resumes": n}
 
+## Health check endpoint
 @app.get("/health")
 def health():
     return {"status": "ok", "db_ready": _db_ready}
 
+## Get all job descriptions
 @app.get("/jds")
 async def get_jds():
-    jds = await db.get_all_jds()
-    return {"jds": jds}
+    try:
+        jds = await db.get_all_jds()
+        return {"jds": jds}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
+## Save a new job description
 @app.post("/jds")
 async def save_jd(request: JDSaveRequest):
-    data = request.model_dump() if hasattr(request, "model_dump") else request.dict()
-    jd_id = await db.save_jd(data)
-    return {"id": jd_id, "status": "saved"}
+    try:
+        data = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+        jd_id = await db.save_jd(data)
+        return {"id": jd_id, "status": "saved"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
+## Get all accepted candidates
 @app.get("/candidates")
 async def get_candidates():
-    candidates = await db.get_accepted_candidates()
-    return {"candidates": candidates}
+    try:
+        candidates = await db.get_accepted_candidates()
+        return {"candidates": candidates}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
+## Update candidate status
 @app.post("/candidates/status")
 async def update_status(request: StatusUpdateRequest):
-    # Lookup the accurate resume_id from MongoDB
-    resume_id = None
-    res = await db.resumes.find_one({"path": request.resume_path})
-    if res:
+    try:
+        res = await db.resumes.find_one({"path": request.resume_path})
+        if not res:
+            raise HTTPException(status_code=404, detail="Candidate not found in database.")
         resume_id = str(res["_id"])
-    
-    if resume_id:
         await db.update_candidate_status(request.jd_id, resume_id, request.status)
         return {"status": "updated"}
-    
-    raise HTTPException(status_code=404, detail="Candidate not found in database.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
+## Shortlist candidates for a job description
 @app.post("/shortlist")
 async def shortlist(request: JDRequest):
     jd_text = request.jd_text.strip()
@@ -345,6 +366,7 @@ async def shortlist(request: JDRequest):
         top_candidates = []
         
         # Parallel LLM Summary Generator
+        ## Process a single candidate for shortlisting
         async def process_candidate(item):
             r, score = item
             text = r["text"]
@@ -401,6 +423,7 @@ async def shortlist(request: JDRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+## Serve a PDF resume from MongoDB
 @app.get("/resume/{resume_id}")
 async def serve_resume(resume_id: str):
     """Serve a PDF resume directly from MongoDB binary storage."""
@@ -421,6 +444,7 @@ async def serve_resume(resume_id: str):
         }
     )
 
+## Generate interview questions using LLM API
 @app.post("/generate-questions")
 async def generate_interview_questions(request: QuestionRequest):
     api_key = get_openrouter_key()
@@ -433,14 +457,11 @@ async def generate_interview_questions(request: QuestionRequest):
         if vector_db:
             for idx, path in vector_db.resume_map.items():
                 if path == request.resume_path:
-                    # We might need to handle how text is stored or retrieved.
-                    # In current implementation, vector_db.search returns text. 
-                    # If we don't have an easy lookup, we might need to re-parse or add a lookup.
-                    # Looking at vector_db implementation...
+
                     pass
     
     # If the text isn't easily searchable by path in the current ResumeVectorDB, 
-    # we'll re-parse it for now (it's fast enough for a single file)
+    # re-parse it for now 
     if not resume_text:
         try:
             from parser.text_extractor import extract_text_from_pdf
@@ -483,7 +504,7 @@ async def generate_interview_questions(request: QuestionRequest):
         res_json = response.json()
         content = res_json["choices"][0]["message"]["content"]
         
-        # Parse the JSON array.
+        # Parse the JSON array of questions from the LLM response
         try:
             parsed = json.loads(content)
             questions = []
@@ -494,8 +515,7 @@ async def generate_interview_questions(request: QuestionRequest):
             else:
                 questions = parsed # fallback
             
-            # Save to MongoDB
-            # We need to find the resume_id
+            # Save to MongoDB search the resume_id
             resume_id = None
             res_doc = await db.resumes.find_one({"path": request.resume_path})
             if res_doc:
@@ -506,7 +526,7 @@ async def generate_interview_questions(request: QuestionRequest):
 
             return {"questions": questions}
         except:
-            # Plan B: Try to extract JSON from the string using regex
+            # Try to extract JSON from the string using regex
             import re
             match = re.search(r"\[.*\]", content, re.DOTALL)
             if match:
@@ -521,7 +541,7 @@ async def generate_interview_questions(request: QuestionRequest):
         print(f"[CRITICAL_QUESTION_FAILURE] {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate questions: {str(e)}")
 
-#jd_generator
+## Generate a job description using LLM API
 @app.post("/generate-jd")
 async def generate_jd(request: JDGenerateRequest):
     """
@@ -570,7 +590,7 @@ async def generate_jd(request: JDGenerateRequest):
         print(f"[JD_GEN_ERROR] {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate JD: {str(e)}")
 
-#entry_point
+## Entry point for running the FastAPI server
 if __name__ == "__main__":
     import uvicorn
     print("[SERVER] Binding to http://0.0.0.0:8000 ...", flush=True)

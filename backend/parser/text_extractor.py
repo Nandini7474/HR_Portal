@@ -1,4 +1,10 @@
 
+import os
+# Must be set before torch/easyocr are imported to prevent OpenMP segfault
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import numpy as np
 import pdfplumber
 
@@ -50,12 +56,23 @@ def _ocr_with_pypdfium2(file_path: str) -> str:
         import pypdfium2 as pdfium
         reader = _get_ocr_reader()
 
+        MAX_DIM = 1600  # cap longest edge to keep memory under ~30 MB per page
+
         pdf = pdfium.PdfDocument(file_path)
         for page_index in range(len(pdf)):
             page   = pdf[page_index]
-            bitmap = page.render(scale=1)          # 1x scale for speed
-            pil_img = bitmap.to_pil()
-            img_np  = np.array(pil_img.convert("RGB"))
+            bitmap = page.render(scale=1)
+            pil_img = bitmap.to_pil().convert("RGB")
+
+            # Downscale if the page image is too large (prevents OOM in PyTorch)
+            w, h = pil_img.size
+            if max(w, h) > MAX_DIM:
+                ratio   = MAX_DIM / max(w, h)
+                pil_img = pil_img.resize(
+                    (max(1, int(w * ratio)), max(1, int(h * ratio)))
+                )
+
+            img_np = np.array(pil_img)
 
             results = reader.readtext(img_np, detail=0, paragraph=True)
             text += " ".join(results) + "\n"
